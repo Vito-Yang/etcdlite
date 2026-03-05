@@ -1,0 +1,43 @@
+# Build directory
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+*.err
+
+# Temporary files
+*.tmp
+*.temp
+
+# Core files
+core.*
+
+# Compiled files
+*.o
+*.so
+*.a
+*.exe
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.cmake
+compile_commands.json
+
+# GoogleTest
+_deps/
+
+# IDE specific
+.claude/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
