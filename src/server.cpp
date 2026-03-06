@@ -25,6 +25,9 @@ namespace etcdlite {
 
 EtcdLiteServer::EtcdLiteServer()
 {
+    // Set lease manager for KVStore
+    kvStore_.SetLeaseManager(&leaseManager_);
+
     // Setup watch callbacks in KVStore
     kvStore_.SetWatchCallback(
         [this](const std::string& key, const mvccpb::KeyValue& kv, const mvccpb::KeyValue* prevKv) {
@@ -59,6 +62,18 @@ Status EtcdLiteServer::Start(const std::string& address)
     // Create gRPC server builder
     grpc::ServerBuilder builder;
     builder.AddListeningPort(address, grpc::InsecureServerCredentials());
+
+
+    // Configure gRPC server keepalive settings to prevent "too_many_pings" errors
+    // These settings allow more frequent client ping messages
+    builder.SetMaxReceiveMessageSize(4 * 1024 * 1024);
+    builder.SetMaxSendMessageSize(4 * 1024 * 1024);
+
+    // Allow client to send pings more frequently
+    builder.AddChannelArgument(GRPC_ARG_HTTP2_MIN_RECV_PING_INTERVAL_WITHOUT_DATA_MS, 1000);  // 1 second
+    builder.AddChannelArgument(GRPC_ARG_KEEPALIVE_TIME_MS, 60000);  // 60 seconds
+    builder.AddChannelArgument(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, 20000);  // 20 seconds
+    builder.AddChannelArgument(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
 
     // Register services
     builder.RegisterService(kvService_.get());

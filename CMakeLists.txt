@@ -198,5 +198,60 @@ target_link_libraries(etcdlite PUBLIC
 add_executable(etcdlite-server src/main.cpp)
 target_link_libraries(etcdlite-server PRIVATE etcdlite)
 
+# 创建直接测试程序
+add_executable(test_lease_direct test_lease_direct.cpp)
+target_include_directories(test_lease_direct PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(test_lease_direct
+    PRIVATE etcdlite
+    PRIVATE etcdlite_proto
+    PRIVATE pthread
+)
+
 # 安装目标
 install(TARGETS etcdlite etcdlite-server DESTINATION ${CMAKE_INSTALL_PREFIX}/lib)
+
+
+# 启用测试
+include(CTest)
+enable_testing()
+
+# 下载并配置 Google Test
+include(FetchContent)
+FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.14.0
+)
+FetchContent_MakeAvailable(googletest)
+
+# 定义测试目标
+set(TEST_SRCS
+    test/test_kv_store.cpp
+    test/test_lease_manager.cpp
+    test/test_watch_manager.cpp
+    test/test_maintenance_service.cpp
+)
+
+# 创建测试可执行文件
+add_executable(etcdlite_tests ${TEST_SRCS})
+
+# 配置测试可执行文件的编译选项
+target_include_directories(etcdlite_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/test
+)
+
+# 链接库
+target_link_libraries(etcdlite_tests
+    PRIVATE etcdlite
+    PRIVATE etcdlite_proto
+    PRIVATE GTest::gtest
+    PRIVATE GTest::gtest_main
+    PRIVATE pthread
+)
+
+# 将测试添加到 CTest
+include(GoogleTest)
+gtest_discover_tests(etcdlite_tests)

@@ -30,11 +30,20 @@
 #include "etcd/api/mvccpb/kv.pb.h"
 #include "etcd/api/etcdserverpb/rpc.pb.h"
 #include "status.h"
+#include "lease/lease_manager.h"
+class LeaseManager;
 
 namespace etcdlite {
 
 class KVStore {
 public:
+    /**
+     * @brief Set lease manager pointer for key management
+     */
+    void SetLeaseManager(LeaseManager* leaseManager) {
+        leaseManager_ = leaseManager;
+    }
+
     KVStore() = default;
     ~KVStore() = default;
 
@@ -121,7 +130,7 @@ public:
 
     /**
      * @brief Set watch callbacks
-'     */
+     */
     void SetWatchCallback(
         std::function<void(const std::string&, const mvccpb::KeyValue&, const mvccpb::KeyValue*)> putCb,
         std::function<void(const std::string&, const mvccpb::KeyValue&)> delCb);
@@ -130,6 +139,11 @@ public:
      * @brief Check if a key exists
      */
     bool KeyExists(const std::string& key) const;
+
+    /**
+     * @brief Check if a key is in range
+     */
+    bool KeyInRange(const std::string& key, const std::string& start, const std::string& end) const;
 
 private:
     struct KeyInfo {
@@ -140,14 +154,16 @@ private:
     };
 
     /**
+     * @brief Internal range query without mutex lock (already holding lock)
+     */
+    void RangeInternal(const std::string& start, const std::string& end,
+                      std::vector<mvccpb::KeyValue>* kvs, int64_t limit,
+                      bool countOnly, bool keysOnly);
+
+    /**
      * @brief Evaluate a compare operation
      */
     bool EvaluateCompare(const etcdserverpb::Compare& cmp, const KeyInfo* info) const;
-
-    /**
-     * @brief Check if a key is in range
-     */
-    bool KeyInRange(const std::string& key, const std::string& start, const std::string& end) const;
 
     std::unordered_map<std::string, KeyInfo> data_;
     std::atomic<int64_t> revision_{1};
@@ -157,6 +173,7 @@ private:
 
     std::function<void(const std::string&, const mvccpb::KeyValue&, const mvccpb::KeyValue*)> putCallback_;
     std::function<void(const std::string&, const mvccpb::KeyValue&)> deleteCallback_;
+    LeaseManager* leaseManager_ = nullptr;
 };
 
 }  // namespace etcdlite

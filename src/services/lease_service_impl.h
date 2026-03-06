@@ -42,6 +42,14 @@ public:
         ::grpc::ServerContext* context,
         ::grpc::ServerReaderWriter<::etcdserverpb::LeaseKeepAliveResponse, ::etcdserverpb::LeaseKeepAliveRequest>* stream) override;
 
+    ::grpc::Status LeaseRevoke(::grpc::ServerContext* context,
+                               const ::etcdserverpb::LeaseRevokeRequest* request,
+                               ::etcdserverpb::LeaseRevokeResponse* response) override;
+
+    ::grpc::Status LeaseTimeToLive(::grpc::ServerContext* context,
+                               const ::etcdserverpb::LeaseTimeToLiveRequest* request,
+                               ::etcdserverpb::LeaseTimeToLiveResponse* response) override;
+
 private:
     LeaseManager* leaseManager_;
     KVStore* kvStore_;

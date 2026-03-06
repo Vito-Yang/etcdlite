@@ -18,6 +18,8 @@
  * Description: KV storage engine implementation
  */
 #include "kv/kv_store.h"
+#include "lease/lease_manager.h"
+#include "lease/lease_manager.h"
 
 #include <algorithm>
 
@@ -47,6 +49,17 @@ Status KVStore::Put(const std::string& key, const std::string& value, int64_t le
     info.modRevision = info.kv.mod_revision();
     info.version = info.kv.version();
 
+    // 处理 lease 关联
+    if (lease > 0 && leaseManager_) {
+        // 如果之前有 lease，先取消关联
+        if (existed && prevKvCopy.lease() > 0) {
+            leaseManager_->DetachKey(prevKvCopy.lease(), key);
+        }
+        leaseManager_->AttachKey(lease, key);
+    } else if (existed && prevKvCopy.lease() > 0 && leaseManager_) {
+        // 如果之前有 lease 但现在没有了，取消关联
+        leaseManager_->DetachKey(prevKvCopy.lease(), key);
+    }
     data_[key] = info;
 
     // 触发Watch事件
@@ -90,31 +103,48 @@ bool KVStore::KeyInRange(const std::string& key, const std::string& start,
     return key < end;  // [start, end)
 }
 
-Status KVStore::Range(const std::string& start, const std::string& end,
-                     std::vector<mvccpb::KeyValue>* kvs, int64_t limit,
-                     bool countOnly, bool keysOnly) {
-    std::lock_guard<std::mutex> lock(mutex_);
+void KVStore::RangeInternal(const std::string& start, const std::string& end,
+                          std::vector<mvccpb::KeyValue>* kvs, int64_t limit,
+                          bool countOnly, bool keysOnly) {
+    std::vector<const KeyInfo*> matchingInfos;
+    for (const auto& [key, info] : data_) {
+        if (KeyInRange(key, start, end)) {
+            matchingInfos.push_back(&info);
+        }
+    }
+
+    // 对键进行排序，确保结果顺序一致
+    std::sort(matchingInfos.begin(), matchingInfos.end(), [](const KeyInfo* a, const KeyInfo* b) {
+        return a->kv.key() < b->kv.key();
+    });
 
     int64_t count = 0;
-    for (const auto& [key, info] : data_) {
-        if (!KeyInRange(key, start, end)) {
-            continue;
-        }
+    for (const auto& info : matchingInfos) {
         count++;
         if (limit > 0 && count > limit) {
             break;
         }
-        if (!countOnly) {
+        if (countOnly) {
+            // 对于 countOnly，我们需要返回一个空的 KeyValue 来表示计数
+            mvccpb::KeyValue kv;
+            kvs->push_back(kv);
+        } else {
             if (keysOnly) {
                 mvccpb::KeyValue kv;
-                kv.set_key(key);
+                kv.set_key(info->kv.key());
                 kvs->push_back(kv);
             } else {
-                kvs->push_back(info.kv);
+                kvs->push_back(info->kv);
             }
         }
     }
+}
 
+Status KVStore::Range(const std::string& start, const std::string& end,
+                     std::vector<mvccpb::KeyValue>* kvs, int64_t limit,
+                     bool countOnly, bool keysOnly) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    RangeInternal(start, end, kvs, limit, countOnly, keysOnly);
     return Status::OK();
 }
 
@@ -126,19 +156,39 @@ Status KVStore::Delete(const std::string& key, const std::string& rangeEnd,
     std::vector<std::string> keysToDelete;
     std::vector<mvccpb::KeyValue> deletedKvs;
 
-    // 找出要删除的keys
-    for (auto it = data_.begin(); it != data_.end(); ++it) {
-        if (KeyInRange(it->first, key, rangeEnd)) {
-            keysToDelete.push_back(it->first);
+    // 简化删除逻辑：如果没有指定范围结束，直接删除单个键
+    if (rangeEnd.empty()) {
+        auto it = data_.find(key);
+        if (it != data_.end()) {
+            keysToDelete.push_back(key);
             if (prevKvs) {
                 deletedKvs.push_back(it->second.kv);
             }
+            // 如果键有 lease，先从 lease manager 解绑
+            if (it->second.kv.lease() > 0 && leaseManager_) {
+                leaseManager_->DetachKey(it->second.kv.lease(), key);
+            }
+            data_.erase(it);
         }
-    }
-
-    // 删除keys
-    for (const auto& k : keysToDelete) {
-        data_.erase(k);
+    } else {
+        // 范围删除 - 先收集要删除的键和它们的 lease 信息
+        std::vector<std::pair<std::string, int64_t>> keyLeasePairs;
+        for (auto it = data_.begin(); it != data_.end(); ++it) {
+            if (KeyInRange(it->first, key, rangeEnd)) {
+                keysToDelete.push_back(it->first);
+                keyLeasePairs.push_back({it->first, it->second.kv.lease()});
+                if (prevKvs) {
+                    deletedKvs.push_back(it->second.kv);
+                }
+            }
+        }
+        // 从 lease manager 解绑并删除键
+        for (const auto& [k, lease] : keyLeasePairs) {
+            if (lease > 0 && leaseManager_) {
+                leaseManager_->DetachKey(lease, k);
+            }
+            data_.erase(k);
+        }
     }
 
     // 触发Watch事件
@@ -260,6 +310,18 @@ Status KVStore::Txn(const std::vector<etcdserverpb::Compare>& compares,
             info.modRevision = info.kv.mod_revision();
             info.version = info.kv.version();
 
+            // 处理 lease 关联
+            if (putReq.lease() > 0 && leaseManager_) {
+                // 如果之前有 lease，先取消关联
+                if (existed && prevKv.lease() > 0) {
+                    leaseManager_->DetachKey(prevKv.lease(), putReq.key());
+                }
+                leaseManager_->AttachKey(putReq.lease(), putReq.key());
+            } else if (existed && prevKv.lease() > 0 && leaseManager_) {
+                // 如果之前有 lease 但现在没有了，取消关联
+                leaseManager_->DetachKey(prevKv.lease(), putReq.key());
+            }
+
             data_[putReq.key()] = info;
 
             auto* putResp = respOp->mutable_response_put();
@@ -272,17 +334,23 @@ Status KVStore::Txn(const std::vector<etcdserverpb::Compare>& compares,
 
             std::vector<std::string> keysToDelete;
             std::vector<mvccpb::KeyValue> deletedKvs;
+            std::vector<std::pair<std::string, int64_t>> keyLeasePairs;
 
             for (auto it = data_.begin(); it != data_.end(); ++it) {
                 if (KeyInRange(it->first, delReq.key(), delReq.range_end())) {
                     keysToDelete.push_back(it->first);
+                    keyLeasePairs.push_back({it->first, it->second.kv.lease()});
                     if (delReq.prev_kv()) {
                         deletedKvs.push_back(it->second.kv);
                     }
                 }
             }
 
-            for (const auto& k : keysToDelete) {
+            // 从 lease manager 解绑并删除键
+            for (const auto& [k, lease] : keyLeasePairs) {
+                if (lease > 0 && leaseManager_) {
+                    leaseManager_->DetachKey(lease, k);
+                }
                 data_.erase(k);
             }
 
@@ -296,7 +364,7 @@ Status KVStore::Txn(const std::vector<etcdserverpb::Compare>& compares,
         } else if (op.has_request_range()) {
             const auto& rangeReq = op.request_range();
             std::vector<mvccpb::KeyValue> kvs;
-            Range(rangeReq.key(), rangeReq.range_end(), &kvs, rangeReq.limit(),
+            RangeInternal(rangeReq.key(), rangeReq.range_end(), &kvs, rangeReq.limit(),
                   rangeReq.count_only(), rangeReq.keys_only());
 
             auto* rangeResp = respOp->mutable_response_range();

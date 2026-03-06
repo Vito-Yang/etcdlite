@@ -82,4 +82,46 @@ void LeaseServiceImpl::FillResponseHeader(::etcdserverpb::ResponseHeader* header
     return ::grpc::Status::OK;
 }
 
+::grpc::Status LeaseServiceImpl::LeaseRevoke(
+    ::grpc::ServerContext* context,
+    const ::etcdserverpb::LeaseRevokeRequest* request,
+    ::etcdserverpb::LeaseRevokeResponse* response)
+{
+    (void)context;
+
+    Status status = leaseManager_->Revoke(request->id());
+    if (status.IsError()) {
+        return ::grpc::Status(::grpc::StatusCode::INTERNAL, status.Message());
+    }
+
+    FillResponseHeader(response->mutable_header());
+    return ::grpc::Status::OK;
+}
+
+::grpc::Status LeaseServiceImpl::LeaseTimeToLive(
+    ::grpc::ServerContext* context,
+    const ::etcdserverpb::LeaseTimeToLiveRequest* request,
+    ::etcdserverpb::LeaseTimeToLiveResponse* response)
+{
+    (void)context;
+
+    int64_t ttl = 0;
+    std::vector<std::string> keys;
+    Status status = leaseManager_->TimeToLive(request->id(), &ttl, request->keys() ? &keys : nullptr);
+    if (status.IsError()) {
+        return ::grpc::Status(::grpc::StatusCode::INTERNAL, status.Message());
+    }
+
+    FillResponseHeader(response->mutable_header());
+    response->set_id(request->id());
+    response->set_ttl(ttl);
+    if (request->keys()) {
+        for (const auto& key : keys) {
+            response->add_keys(key);
+        }
+    }
+
+    return ::grpc::Status::OK;
+}
+
 }  // namespace etcdlite
